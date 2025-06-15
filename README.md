@@ -44,31 +44,53 @@ The `DEPENDENCY.md` file should follow this structure:
 ```markdown
 # Dependencies
 
-## Dependencies
-- Infra layer -> Presentation layer -> Application layer -> Domain layer
-
 ## Layers
-- Domain layer
+
+Upper layers cannot depend on lower layers.
+
+1. Domain layer
+  - Implementation of core entities
+2. Application layer
+  - Business logic using objects from the domain layer
+3. Presentation layer
+  - UI and presentation logic
+4. Infra layer
+  - Gateway to the real world
+
+## Packages in layers
+
+Upper packages cannot depend on lower packages.
+
+1. Domain layer
   - domain/entity
-- Application layer
-  - usecase
-- Presentation layer
-  - router
-- Infra layer
+  - domain/valueobject
+    - domain/service
+2. Application layer
+  - app/service
+    - app/usecase
+3. Presentation layer
+  - api
+  - cli
+4. Infra layer
   - infra/database
+  - infra/cache
 ```
 
 ### Format Specification
 
-#### Dependencies Section
-- Define dependency chains using arrows (`->`)
-- Dependencies flow from left to right
-- Each layer can depend on the layers to its right
-
 #### Layers Section
-- Define layer names and their corresponding package paths
-- Use bullet points (`-`) for layer names
-- Use indented bullet points (`  -`) for package paths
+- Define layer names and their responsibilities
+- Use ordered points (`1.`, `2.`, ...) for layer names
+- Use indented bullet points (`  -`) for layer descriptions
+- Lower layers depend on upper layers
+- Upper layers cannot depend on lower layers
+
+#### Packages in layers Section
+- Define packages in each layer
+- Use ordered points (`1.`, `2.`, ...) for parent package names
+- Use indented bullet points (`  -`, `    -`, ...) for package paths
+- Lower packages depend on upper packages in the same layer
+- Upper packages cannot depend on lower packages
 - Package paths are relative to the directory containing `DEPENDENCY.md`
 
 ## Generated Files
@@ -81,7 +103,10 @@ For each layer with a defined package path, `go-package-dependency` generates a 
 package usecase
 
 import (
+	_ "github.com/handlename/go-package-dependency/example/app/service"
 	_ "github.com/handlename/go-package-dependency/example/domain/entity"
+	_ "github.com/handlename/go-package-dependency/example/domain/service"
+	_ "github.com/handlename/go-package-dependency/example/domain/valueobject"
 )
 ```
 
@@ -92,14 +117,25 @@ example/
 ├── DEPENDENCY.md
 ├── go.mod
 ├── domain/
-│   └── entity/
+│   ├── entity/
+│   │   └── dependency.gen.go
+│   ├── valueobject/
+│   │   └── dependency.gen.go
+│   └── service/
 │       └── dependency.gen.go
-├── usecase/
+├── app/
+│   ├── service/
+│   │   └── dependency.gen.go
+│   └── usecase/
+│       └── dependency.gen.go
+├── api/
 │   └── dependency.gen.go
-├── router/
+├── cli/
 │   └── dependency.gen.go
 └── infra/
-    └── database/
+    ├── database/
+    │   └── dependency.gen.go
+    └── cache/
         └── dependency.gen.go
 ```
 

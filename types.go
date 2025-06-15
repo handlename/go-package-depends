@@ -116,13 +116,100 @@ func (e ModuleNotFoundError) Error() string {
 	return fmt.Sprintf("module declaration not found in %s", e.Source)
 }
 
-// Structs
-type Layer struct {
-	Name LayerName
-	Path LayerPath
+// Package represents a single package with its hierarchical level
+type Package struct {
+	Path  LayerPath // e.g., "domain/entity", "domain/service"
+	Level int       // Indentation level (0 = top level, 1 = one indent, etc.)
 }
 
+// Layer represents a layer with its packages
+type Layer struct {
+	Name     LayerName
+	Order    int       // Layer order (1, 2, 3, ...)
+	Packages []Package // Packages in this layer
+}
+
+// DependencyConfig represents the complete dependency configuration
 type DependencyConfig struct {
-	Layers       []Layer
-	Dependencies map[LayerName][]LayerName
+	Layers []Layer
+}
+
+// GetAllPackages returns all packages across all layers
+func (dc *DependencyConfig) GetAllPackages() []Package {
+	var allPackages []Package
+	for _, layer := range dc.Layers {
+		allPackages = append(allPackages, layer.Packages...)
+	}
+	return allPackages
+}
+
+// GetPackagesByLayer returns packages for a specific layer
+func (dc *DependencyConfig) GetPackagesByLayer(layerName LayerName) []Package {
+	for _, layer := range dc.Layers {
+		if layer.Name == layerName {
+			return layer.Packages
+		}
+	}
+	return nil
+}
+
+// GetDependenciesForPackage calculates dependencies for a given package
+func (dc *DependencyConfig) GetDependenciesForPackage(targetPackage Package) []LayerPath {
+	var dependencies []LayerPath
+
+	// Find the layer containing this package
+	var targetLayer *Layer
+	for i := range dc.Layers {
+		for _, pkg := range dc.Layers[i].Packages {
+			if pkg.Path == targetPackage.Path {
+				targetLayer = &dc.Layers[i]
+				break
+			}
+		}
+		if targetLayer != nil {
+			break
+		}
+	}
+
+	if targetLayer == nil {
+		return dependencies
+	}
+
+	// Add dependencies from upper layers (layers with lower order)
+	for _, layer := range dc.Layers {
+		if layer.Order < targetLayer.Order {
+			for _, pkg := range layer.Packages {
+				dependencies = append(dependencies, pkg.Path)
+			}
+		}
+	}
+
+	// Find target package index
+	var targetIndex int
+	for i, pkg := range targetLayer.Packages {
+		if pkg.Path == targetPackage.Path {
+			targetIndex = i
+			break
+		}
+	}
+
+	// Add dependencies from the same layer
+	for i, pkg := range targetLayer.Packages {
+		if pkg.Path != targetPackage.Path {
+			// Can depend on packages at higher levels (lower level number)
+			// or packages at the same level that come before in the hierarchy
+			if pkg.Level < targetPackage.Level || (pkg.Level == targetPackage.Level && i < targetIndex) {
+				dependencies = append(dependencies, pkg.Path)
+			}
+		}
+	}
+
+	return dependencies
+}
+
+// GetPackageName extracts the package name from a package path
+func GetPackageName(packagePath LayerPath) PackageName {
+	path := string(packagePath)
+	parts := strings.Split(path, "/")
+	return PackageName(parts[len(parts)-1])
 }

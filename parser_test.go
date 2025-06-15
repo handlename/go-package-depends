@@ -13,41 +13,77 @@ func TestParseDependencyContent(t *testing.T) {
 		name           string
 		content        string
 		expectedLayers []Layer
-		expectedDeps   map[LayerName][]LayerName
 		expectError    bool
 	}{
 		{
-			name: "valid dependency file",
+			name: "valid hierarchical dependency file",
 			content: `# Dependencies
 
-## Dependencies
-- Infra layer -> Presentation layer -> Application layer -> Domain layer
-- Another layer -> Domain layer
-
 ## Layers
-- Domain layer
+
+Upper layers cannot depend on lower layers.
+
+1. Domain layer
+  - Implementation of core entities
+2. Application layer
+  - Business logic using objects from the domain layer
+3. Presentation layer
+  - UI and presentation logic
+4. Infra layer
+  - Gateway to the real world
+
+## Packages in layers
+
+Upper packages cannot depend on lower packages.
+
+1. Domain layer
   - domain/entity
-- Application layer
-  - application/usecase
-- Presentation layer
-  - presentation/handler
-- Infra layer
-  - infra/repository
-- Another layer
-  - another/path
+  - domain/valueobject
+    - domain/service
+2. Application layer
+  - app/service
+    - app/usecase
+3. Presentation layer
+  - api
+  - cli
+4. Infra layer
+  - infra/database
+  - infra/cache
 `,
 			expectedLayers: []Layer{
-				{Name: LayerName("Domain layer"), Path: LayerPath("domain/entity")},
-				{Name: LayerName("Application layer"), Path: LayerPath("application/usecase")},
-				{Name: LayerName("Presentation layer"), Path: LayerPath("presentation/handler")},
-				{Name: LayerName("Infra layer"), Path: LayerPath("infra/repository")},
-				{Name: LayerName("Another layer"), Path: LayerPath("another/path")},
-			},
-			expectedDeps: map[LayerName][]LayerName{
-				LayerName("Infra layer"):        {LayerName("Presentation layer")},
-				LayerName("Presentation layer"): {LayerName("Application layer")},
-				LayerName("Application layer"):  {LayerName("Domain layer")},
-				LayerName("Another layer"):      {LayerName("Domain layer")},
+				{
+					Name:  LayerName("Domain layer"),
+					Order: 1,
+					Packages: []Package{
+						{Path: LayerPath("domain/entity"), Level: 0},
+						{Path: LayerPath("domain/valueobject"), Level: 0},
+						{Path: LayerPath("domain/service"), Level: 1},
+					},
+				},
+				{
+					Name:  LayerName("Application layer"),
+					Order: 2,
+					Packages: []Package{
+						{Path: LayerPath("app/service"), Level: 0},
+						{Path: LayerPath("app/usecase"), Level: 1},
+					},
+				},
+				{
+					Name:  LayerName("Presentation layer"),
+					Order: 3,
+					Packages: []Package{
+						{Path: LayerPath("api"), Level: 0},
+						{Path: LayerPath("cli"), Level: 0},
+					},
+				},
+				{
+					Name:  LayerName("Infra layer"),
+					Order: 4,
+					Packages: []Package{
+						{Path: LayerPath("infra/database"), Level: 0},
+						{Path: LayerPath("infra/cache"), Level: 0},
+					},
+				},
 			},
 			expectError: false,
 		},
@@ -55,47 +91,53 @@ func TestParseDependencyContent(t *testing.T) {
 			name:           "empty content",
 			content:        ``,
 			expectedLayers: []Layer{},
-			expectedDeps:   map[LayerName][]LayerName{},
 			expectError:    false,
-		},
-		{
-			name: "only dependencies section",
-			content: `## Dependencies
-- Layer A -> Layer B`,
-			expectedLayers: []Layer{},
-			expectedDeps: map[LayerName][]LayerName{
-				LayerName("Layer A"): {LayerName("Layer B")},
-			},
-			expectError: false,
 		},
 		{
 			name: "only layers section",
 			content: `## Layers
-- Test layer
-  - test/path`,
+1. Test layer
+  - Test layer description`,
 			expectedLayers: []Layer{
-				{Name: LayerName("Test layer"), Path: LayerPath("test/path")},
+				{Name: LayerName("Test layer"), Order: 1, Packages: []Package{}},
 			},
-			expectedDeps: map[LayerName][]LayerName{},
-			expectError:  false,
+			expectError: false,
+		},
+		{
+			name: "only packages section",
+			content: `## Packages in layers
+1. Domain layer
+  - domain/entity`,
+			expectedLayers: []Layer{},
+			expectError:    false,
 		},
 		{
 			name: "invalid layer path with ..",
 			content: `## Layers
-- Test layer
+1. Test layer
+
+## Packages in layers
+1. Test layer
   - ../invalid/path`,
 			expectedLayers: []Layer{},
-			expectedDeps:   map[LayerName][]LayerName{},
 			expectError:    true,
 		},
 		{
-			name: "line that doesn't match layer format",
+			name: "single layer with single package",
 			content: `## Layers
--
-  - test/path`,
-			expectedLayers: []Layer{},
-			expectedDeps:   map[LayerName][]LayerName{},
-			expectError:    false,
+1. Domain layer
+
+## Packages in layers
+1. Domain layer
+  - domain/entity`,
+			expectedLayers: []Layer{
+				{
+					Name:     LayerName("Domain layer"),
+					Order:    1,
+					Packages: []Package{{Path: LayerPath("domain/entity"), Level: 0}},
+				},
+			},
+			expectError: false,
 		},
 	}
 
@@ -110,6 +152,7 @@ func TestParseDependencyContent(t *testing.T) {
 			}
 
 			require.NoError(t, err)
+			require.NotNil(t, config)
 
 			// Check layers
 			assert.Len(t, config.Layers, len(tt.expectedLayers))
@@ -118,105 +161,22 @@ func TestParseDependencyContent(t *testing.T) {
 				require.Less(t, i, len(config.Layers), "Missing layer at index %d", i)
 				actual := config.Layers[i]
 				assert.Equal(t, expected.Name, actual.Name, "Layer %d name mismatch", i)
-				assert.Equal(t, expected.Path, actual.Path, "Layer %d path mismatch", i)
-			}
+				assert.Equal(t, expected.Order, actual.Order, "Layer %d order mismatch", i)
 
-			// Check dependencies
-			assert.Len(t, config.Dependencies, len(tt.expectedDeps))
-
-			for layer, expectedDeps := range tt.expectedDeps {
-				actualDeps, exists := config.Dependencies[layer]
-				assert.True(t, exists, "Missing dependencies for layer %s", layer)
-
-				assert.Len(t, actualDeps, len(expectedDeps), "Layer %s dependency count mismatch", layer)
-
-				for i, expectedDep := range expectedDeps {
-					require.Less(t, i, len(actualDeps), "Missing dependency at index %d for layer %s", i, layer)
-					assert.Equal(t, expectedDep, actualDeps[i], "Layer %s dependency %d mismatch", layer, i)
+				// Check packages
+				assert.Len(t, actual.Packages, len(expected.Packages), "Layer %d package count mismatch", i)
+				for j, expectedPkg := range expected.Packages {
+					require.Less(t, j, len(actual.Packages), "Missing package at index %d for layer %d", j, i)
+					actualPkg := actual.Packages[j]
+					assert.Equal(t, expectedPkg.Path, actualPkg.Path, "Layer %d package %d path mismatch", i, j)
+					assert.Equal(t, expectedPkg.Level, actualPkg.Level, "Layer %d package %d level mismatch", i, j)
 				}
 			}
 		})
 	}
 }
 
-func TestParseDependencyLine(t *testing.T) {
-	tests := []struct {
-		name        string
-		line        string
-		expected    map[LayerName][]LayerName
-		expectError bool
-	}{
-		{
-			name: "simple dependency chain",
-			line: "- Layer A -> Layer B -> Layer C",
-			expected: map[LayerName][]LayerName{
-				LayerName("Layer A"): {LayerName("Layer B")},
-				LayerName("Layer B"): {LayerName("Layer C")},
-			},
-			expectError: false,
-		},
-		{
-			name: "single dependency",
-			line: "- Frontend -> Backend",
-			expected: map[LayerName][]LayerName{
-				LayerName("Frontend"): {LayerName("Backend")},
-			},
-			expectError: false,
-		},
-		{
-			name: "long dependency chain",
-			line: "- UI -> Service -> Repository -> Database",
-			expected: map[LayerName][]LayerName{
-				LayerName("UI"):         {LayerName("Service")},
-				LayerName("Service"):    {LayerName("Repository")},
-				LayerName("Repository"): {LayerName("Database")},
-			},
-			expectError: false,
-		},
-		{
-			name: "dependency with extra spaces",
-			line: "-   Layer A   ->   Layer B   ->   Layer C   ",
-			expected: map[LayerName][]LayerName{
-				LayerName("Layer A"): {LayerName("Layer B")},
-				LayerName("Layer B"): {LayerName("Layer C")},
-			},
-			expectError: false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			config := &DependencyConfig{
-				Layers:       make([]Layer, 0),
-				Dependencies: make(map[LayerName][]LayerName),
-			}
-
-			parser := NewParser()
-			err := parser.ParseDependencyLine(tt.line, config)
-
-			if tt.expectError {
-				assert.Error(t, err)
-				return
-			}
-
-			require.NoError(t, err)
-
-			// Check that all expected dependencies are present
-			for layer, expectedDeps := range tt.expected {
-				actualDeps, exists := config.Dependencies[layer]
-				assert.True(t, exists, "Missing dependencies for layer %s", layer)
-
-				assert.Len(t, actualDeps, len(expectedDeps), "Layer %s dependency count mismatch", layer)
-
-				for i, expectedDep := range expectedDeps {
-					assert.Equal(t, expectedDep, actualDeps[i], "Layer %s dependency %d mismatch", layer, i)
-				}
-			}
-		})
-	}
-}
-
-func TestParseLayerLine(t *testing.T) {
+func TestParseLayersSection(t *testing.T) {
 	tests := []struct {
 		name           string
 		lines          []string
@@ -224,57 +184,58 @@ func TestParseLayerLine(t *testing.T) {
 		expectError    bool
 	}{
 		{
-			name: "layer with path",
+			name: "single layer",
 			lines: []string{
-				"- Domain layer",
-				"  - domain/entity",
+				"1. Domain layer",
 			},
 			expectedLayers: []Layer{
-				{Name: "Domain layer", Path: "domain/entity"},
+				{Name: LayerName("Domain layer"), Order: 1, Packages: []Package{}},
 			},
 			expectError: false,
 		},
 		{
-			name: "multiple layers with paths",
+			name: "multiple layers",
 			lines: []string{
-				"- Domain layer",
-				"  - domain/entity",
-				"- Application layer",
-				"  - application/usecase",
+				"1. Domain layer",
+				"2. Application layer",
+				"3. Presentation layer",
 			},
 			expectedLayers: []Layer{
-				{Name: "Domain layer", Path: "domain/entity"},
-				{Name: "Application layer", Path: "application/usecase"},
+				{Name: LayerName("Domain layer"), Order: 1, Packages: []Package{}},
+				{Name: LayerName("Application layer"), Order: 2, Packages: []Package{}},
+				{Name: LayerName("Presentation layer"), Order: 3, Packages: []Package{}},
 			},
 			expectError: false,
 		},
 		{
-			name: "layer without path",
+			name: "layers with descriptions",
 			lines: []string{
-				"- Standalone layer",
+				"1. Domain layer",
+				"  - Implementation of core entities",
+				"2. Application layer",
+				"  - Business logic",
 			},
 			expectedLayers: []Layer{
-				{Name: "Standalone layer", Path: ""},
+				{Name: LayerName("Domain layer"), Order: 1, Packages: []Package{}},
+				{Name: LayerName("Application layer"), Order: 2, Packages: []Package{}},
 			},
 			expectError: false,
 		},
 		{
-			name: "invalid path with ..",
+			name: "invalid layer number",
 			lines: []string{
-				"- Test layer",
-				"  - ../invalid/path",
+				"x. Invalid layer",
+			},
+			expectedLayers: []Layer{},
+			expectError:    false, // Should skip invalid lines
+		},
+		{
+			name: "empty layer name",
+			lines: []string{
+				"1. ",
 			},
 			expectedLayers: []Layer{},
 			expectError:    true,
-		},
-		{
-			name: "line that doesn't match format",
-			lines: []string{
-				"- ",
-				"  - valid/path",
-			},
-			expectedLayers: []Layer{},
-			expectError:    false,
 		},
 	}
 
@@ -287,7 +248,109 @@ func TestParseLayerLine(t *testing.T) {
 			parser := NewParser()
 			var lastErr error
 			for _, line := range tt.lines {
-				err := parser.ParseLayerLine(line, config)
+				err := parser.ParseLayersSection(line, config)
+				if err != nil {
+					lastErr = err
+					break
+				}
+			}
+
+			if tt.expectError {
+				assert.Error(t, lastErr)
+				return
+			}
+
+			assert.NoError(t, lastErr)
+			assert.Len(t, config.Layers, len(tt.expectedLayers))
+
+			for i, expected := range tt.expectedLayers {
+				require.Less(t, i, len(config.Layers), "Missing layer at index %d", i)
+				actual := config.Layers[i]
+				assert.Equal(t, expected.Name, actual.Name, "Layer %d name mismatch", i)
+				assert.Equal(t, expected.Order, actual.Order, "Layer %d order mismatch", i)
+			}
+		})
+	}
+}
+
+func TestParsePackagesSection(t *testing.T) {
+	tests := []struct {
+		name            string
+		setupLayers     []Layer
+		lines           []string
+		expectedPackage map[string][]Package // layer name -> packages
+		expectError     bool
+	}{
+		{
+			name: "single layer with packages",
+			setupLayers: []Layer{
+				{Name: LayerName("Domain layer"), Order: 1, Packages: []Package{}},
+			},
+			lines: []string{
+				"1. Domain layer",
+				"  - domain/entity",
+				"  - domain/valueobject",
+				"    - domain/service",
+			},
+			expectedPackage: map[string][]Package{
+				"Domain layer": {
+					{Path: LayerPath("domain/entity"), Level: 0},
+					{Path: LayerPath("domain/valueobject"), Level: 0},
+					{Path: LayerPath("domain/service"), Level: 1},
+				},
+			},
+			expectError: false,
+		},
+		{
+			name: "multiple layers with packages",
+			setupLayers: []Layer{
+				{Name: LayerName("Domain layer"), Order: 1, Packages: []Package{}},
+				{Name: LayerName("Application layer"), Order: 2, Packages: []Package{}},
+			},
+			lines: []string{
+				"1. Domain layer",
+				"  - domain/entity",
+				"2. Application layer",
+				"  - app/service",
+				"    - app/usecase",
+			},
+			expectedPackage: map[string][]Package{
+				"Domain layer": {
+					{Path: LayerPath("domain/entity"), Level: 0},
+				},
+				"Application layer": {
+					{Path: LayerPath("app/service"), Level: 0},
+					{Path: LayerPath("app/usecase"), Level: 1},
+				},
+			},
+			expectError: false,
+		},
+		{
+			name: "invalid package path",
+			setupLayers: []Layer{
+				{Name: LayerName("Domain layer"), Order: 1, Packages: []Package{}},
+			},
+			lines: []string{
+				"1. Domain layer",
+				"  - ../invalid/path",
+			},
+			expectedPackage: map[string][]Package{},
+			expectError:     true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := &DependencyConfig{
+				Layers: tt.setupLayers,
+			}
+
+			parser := NewParser()
+			var currentLayer *Layer
+			var lastErr error
+
+			for _, line := range tt.lines {
+				err := parser.ParsePackagesSection(line, config, &currentLayer)
 				if err != nil {
 					lastErr = err
 					break
@@ -301,14 +364,63 @@ func TestParseLayerLine(t *testing.T) {
 
 			assert.NoError(t, lastErr)
 
-			assert.Len(t, config.Layers, len(tt.expectedLayers))
+			// Check packages in each layer
+			for layerName, expectedPackages := range tt.expectedPackage {
+				var foundLayer *Layer
+				for i := range config.Layers {
+					if string(config.Layers[i].Name) == layerName {
+						foundLayer = &config.Layers[i]
+						break
+					}
+				}
 
-			for i, expected := range tt.expectedLayers {
-				require.Less(t, i, len(config.Layers), "Missing layer at index %d", i)
-				actual := config.Layers[i]
-				assert.Equal(t, expected.Name, actual.Name, "Layer %d name mismatch", i)
-				assert.Equal(t, expected.Path, actual.Path, "Layer %d path mismatch", i)
+				require.NotNil(t, foundLayer, "Layer %s not found", layerName)
+				assert.Len(t, foundLayer.Packages, len(expectedPackages), "Package count mismatch for layer %s", layerName)
+
+				for i, expectedPkg := range expectedPackages {
+					require.Less(t, i, len(foundLayer.Packages), "Missing package at index %d for layer %s", i, layerName)
+					actualPkg := foundLayer.Packages[i]
+					assert.Equal(t, expectedPkg.Path, actualPkg.Path, "Package %d path mismatch for layer %s", i, layerName)
+					assert.Equal(t, expectedPkg.Level, actualPkg.Level, "Package %d level mismatch for layer %s", i, layerName)
+				}
 			}
+		})
+	}
+}
+
+func TestCalculateIndentationLevel(t *testing.T) {
+	tests := []struct {
+		name     string
+		line     string
+		expected int
+	}{
+		{
+			name:     "no indentation",
+			line:     "- package/path",
+			expected: 0,
+		},
+		{
+			name:     "level 0 indentation",
+			line:     "  - package/path",
+			expected: 0,
+		},
+		{
+			name:     "level 1 indentation",
+			line:     "    - package/path",
+			expected: 1,
+		},
+		{
+			name:     "extra spaces",
+			line:     "      - package/path",
+			expected: 1,
+		},
+	}
+
+	parser := NewParser()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := parser.calculateIndentationLevel(tt.line)
+			assert.Equal(t, tt.expected, result)
 		})
 	}
 }
@@ -396,18 +508,27 @@ go 1.21
 
 func TestParseDependencyFile(t *testing.T) {
 	// Create a temporary file
-	content := `# Test Dependencies
-
-## Dependencies
-- Presentation layer -> Application layer -> Domain layer
+	content := `# Dependencies
 
 ## Layers
-- Domain layer
+
+Upper layers cannot depend on lower layers.
+
+1. Domain layer
+  - Implementation of core entities
+2. Application layer
+  - Business logic using objects from the domain layer
+
+## Packages in layers
+
+Upper packages cannot depend on lower packages.
+
+1. Domain layer
   - domain/entity
-- Application layer
-  - application/usecase
-- Presentation layer
-  - presentation/handler
+  - domain/valueobject
+2. Application layer
+  - app/service
+    - app/usecase
 `
 
 	tmpFile, err := os.CreateTemp("", "dependency-*.md")
@@ -424,9 +545,22 @@ func TestParseDependencyFile(t *testing.T) {
 
 	// Verify the parsed content
 	expectedLayers := []Layer{
-		{Name: LayerName("Domain layer"), Path: LayerPath("domain/entity")},
-		{Name: LayerName("Application layer"), Path: LayerPath("application/usecase")},
-		{Name: LayerName("Presentation layer"), Path: LayerPath("presentation/handler")},
+		{
+			Name:  LayerName("Domain layer"),
+			Order: 1,
+			Packages: []Package{
+				{Path: LayerPath("domain/entity"), Level: 0},
+				{Path: LayerPath("domain/valueobject"), Level: 0},
+			},
+		},
+		{
+			Name:  LayerName("Application layer"),
+			Order: 2,
+			Packages: []Package{
+				{Path: LayerPath("app/service"), Level: 0},
+				{Path: LayerPath("app/usecase"), Level: 1},
+			},
+		},
 	}
 
 	assert.Len(t, config.Layers, len(expectedLayers))
@@ -435,24 +569,14 @@ func TestParseDependencyFile(t *testing.T) {
 		require.Less(t, i, len(config.Layers), "Missing layer at index %d", i)
 		actual := config.Layers[i]
 		assert.Equal(t, expected.Name, actual.Name, "Layer %d name mismatch", i)
-		assert.Equal(t, expected.Path, actual.Path, "Layer %d path mismatch", i)
-	}
+		assert.Equal(t, expected.Order, actual.Order, "Layer %d order mismatch", i)
 
-	expectedDeps := map[LayerName][]LayerName{
-		LayerName("Presentation layer"): {LayerName("Application layer")},
-		LayerName("Application layer"):  {LayerName("Domain layer")},
-	}
-
-	assert.Len(t, config.Dependencies, len(expectedDeps))
-
-	for layer, expectedDeps := range expectedDeps {
-		actualDeps, exists := config.Dependencies[layer]
-		assert.True(t, exists, "Missing dependencies for layer %s", layer)
-
-		assert.Len(t, actualDeps, len(expectedDeps), "Layer %s dependency count mismatch", layer)
-
-		for i, expectedDep := range expectedDeps {
-			assert.Equal(t, expectedDep, actualDeps[i], "Layer %s dependency %d mismatch", layer, i)
+		assert.Len(t, actual.Packages, len(expected.Packages), "Layer %d package count mismatch", i)
+		for j, expectedPkg := range expected.Packages {
+			require.Less(t, j, len(actual.Packages), "Missing package at index %d for layer %d", j, i)
+			actualPkg := actual.Packages[j]
+			assert.Equal(t, expectedPkg.Path, actualPkg.Path, "Layer %d package %d path mismatch", i, j)
+			assert.Equal(t, expectedPkg.Level, actualPkg.Level, "Layer %d package %d level mismatch", i, j)
 		}
 	}
 }

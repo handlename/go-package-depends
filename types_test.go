@@ -260,33 +260,229 @@ func TestModuleNotFoundError(t *testing.T) {
 	assert.Equal(t, expected, err.Error())
 }
 
-// Test structs
-func TestLayer(t *testing.T) {
-	layer := Layer{
-		Name: LayerName("test-layer"),
-		Path: LayerPath("path/to/layer"),
+// Test Package struct
+func TestPackage(t *testing.T) {
+	pkg := Package{
+		Path:  LayerPath("domain/entity"),
+		Level: 1,
 	}
 
-	assert.Equal(t, "test-layer", layer.Name.String())
-	assert.Equal(t, "path/to/layer", layer.Path.String())
+	assert.Equal(t, "domain/entity", pkg.Path.String())
+	assert.Equal(t, 1, pkg.Level)
 }
 
+// Test Layer struct
+func TestLayer(t *testing.T) {
+	layer := Layer{
+		Name:  LayerName("Domain layer"),
+		Order: 1,
+		Packages: []Package{
+			{Path: LayerPath("domain/entity"), Level: 0},
+			{Path: LayerPath("domain/service"), Level: 1},
+		},
+	}
+
+	assert.Equal(t, "Domain layer", layer.Name.String())
+	assert.Equal(t, 1, layer.Order)
+	assert.Len(t, layer.Packages, 2)
+	assert.Equal(t, "domain/entity", layer.Packages[0].Path.String())
+	assert.Equal(t, 0, layer.Packages[0].Level)
+	assert.Equal(t, "domain/service", layer.Packages[1].Path.String())
+	assert.Equal(t, 1, layer.Packages[1].Level)
+}
+
+// Test DependencyConfig struct
 func TestDependencyConfig(t *testing.T) {
 	config := DependencyConfig{
 		Layers: []Layer{
-			{Name: LayerName("layer1"), Path: LayerPath("path1")},
-			{Name: LayerName("layer2"), Path: LayerPath("path2")},
-		},
-		Dependencies: map[LayerName][]LayerName{
-			LayerName("layer1"): {LayerName("layer2")},
+			{
+				Name:  LayerName("Domain layer"),
+				Order: 1,
+				Packages: []Package{
+					{Path: LayerPath("domain/entity"), Level: 0},
+				},
+			},
+			{
+				Name:  LayerName("Application layer"),
+				Order: 2,
+				Packages: []Package{
+					{Path: LayerPath("app/usecase"), Level: 0},
+				},
+			},
 		},
 	}
 
 	assert.Len(t, config.Layers, 2)
-	assert.Len(t, config.Dependencies, 1)
+	assert.Equal(t, "Domain layer", config.Layers[0].Name.String())
+	assert.Equal(t, "Application layer", config.Layers[1].Name.String())
+}
 
-	deps, exists := config.Dependencies[LayerName("layer1")]
-	assert.True(t, exists, "Expected dependency for layer1 to exist")
-	assert.Len(t, deps, 1)
-	assert.Equal(t, LayerName("layer2"), deps[0])
+// Test GetAllPackages method
+func TestDependencyConfig_GetAllPackages(t *testing.T) {
+	config := &DependencyConfig{
+		Layers: []Layer{
+			{
+				Name:  LayerName("Domain layer"),
+				Order: 1,
+				Packages: []Package{
+					{Path: LayerPath("domain/entity"), Level: 0},
+					{Path: LayerPath("domain/service"), Level: 1},
+				},
+			},
+			{
+				Name:  LayerName("Application layer"),
+				Order: 2,
+				Packages: []Package{
+					{Path: LayerPath("app/usecase"), Level: 0},
+				},
+			},
+		},
+	}
+
+	packages := config.GetAllPackages()
+
+	assert.Len(t, packages, 3)
+
+	expectedPaths := []string{"domain/entity", "domain/service", "app/usecase"}
+	actualPaths := make([]string, len(packages))
+	for i, pkg := range packages {
+		actualPaths[i] = pkg.Path.String()
+	}
+
+	for _, expectedPath := range expectedPaths {
+		assert.Contains(t, actualPaths, expectedPath)
+	}
+}
+
+// Test GetPackagesByLayer method
+func TestDependencyConfig_GetPackagesByLayer(t *testing.T) {
+	config := &DependencyConfig{
+		Layers: []Layer{
+			{
+				Name:  LayerName("Domain layer"),
+				Order: 1,
+				Packages: []Package{
+					{Path: LayerPath("domain/entity"), Level: 0},
+					{Path: LayerPath("domain/service"), Level: 1},
+				},
+			},
+			{
+				Name:  LayerName("Application layer"),
+				Order: 2,
+				Packages: []Package{
+					{Path: LayerPath("app/usecase"), Level: 0},
+				},
+			},
+		},
+	}
+
+	// Test existing layer
+	domainPackages := config.GetPackagesByLayer(LayerName("Domain layer"))
+	assert.Len(t, domainPackages, 2)
+	assert.Equal(t, "domain/entity", domainPackages[0].Path.String())
+	assert.Equal(t, "domain/service", domainPackages[1].Path.String())
+
+	// Test non-existent layer
+	nonExistentPackages := config.GetPackagesByLayer(LayerName("Non-existent layer"))
+	assert.Nil(t, nonExistentPackages)
+}
+
+// Test GetDependenciesForPackage method
+func TestDependencyConfig_GetDependenciesForPackage(t *testing.T) {
+	config := &DependencyConfig{
+		Layers: []Layer{
+			{
+				Name:  LayerName("Domain layer"),
+				Order: 1,
+				Packages: []Package{
+					{Path: LayerPath("domain/entity"), Level: 0},
+					{Path: LayerPath("domain/valueobject"), Level: 0},
+					{Path: LayerPath("domain/service"), Level: 1},
+				},
+			},
+			{
+				Name:  LayerName("Application layer"),
+				Order: 2,
+				Packages: []Package{
+					{Path: LayerPath("app/service"), Level: 0},
+					{Path: LayerPath("app/usecase"), Level: 1},
+				},
+			},
+		},
+	}
+
+	tests := []struct {
+		name          string
+		targetPackage Package
+		expectedDeps  []string
+	}{
+		{
+			name:          "domain entity - no dependencies",
+			targetPackage: Package{Path: LayerPath("domain/entity"), Level: 0},
+			expectedDeps:  []string{},
+		},
+		{
+			name:          "domain service - depends on entity and valueobject",
+			targetPackage: Package{Path: LayerPath("domain/service"), Level: 1},
+			expectedDeps:  []string{"domain/entity", "domain/valueobject"},
+		},
+		{
+			name:          "app usecase - depends on domain layer and app service",
+			targetPackage: Package{Path: LayerPath("app/usecase"), Level: 1},
+			expectedDeps:  []string{"domain/entity", "domain/valueobject", "domain/service", "app/service"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dependencies := config.GetDependenciesForPackage(tt.targetPackage)
+
+			actualDeps := make([]string, len(dependencies))
+			for i, dep := range dependencies {
+				actualDeps[i] = dep.String()
+			}
+
+			assert.Len(t, actualDeps, len(tt.expectedDeps))
+			for _, expectedDep := range tt.expectedDeps {
+				assert.Contains(t, actualDeps, expectedDep)
+			}
+		})
+	}
+}
+
+// Test GetPackageName function
+func TestGetPackageName(t *testing.T) {
+	tests := []struct {
+		name        string
+		packagePath LayerPath
+		expected    PackageName
+	}{
+		{
+			name:        "simple package name",
+			packagePath: LayerPath("entity"),
+			expected:    PackageName("entity"),
+		},
+		{
+			name:        "nested package path",
+			packagePath: LayerPath("domain/entity"),
+			expected:    PackageName("entity"),
+		},
+		{
+			name:        "deeply nested package path",
+			packagePath: LayerPath("infra/database/mysql"),
+			expected:    PackageName("mysql"),
+		},
+		{
+			name:        "package with multiple segments",
+			packagePath: LayerPath("app/service/user"),
+			expected:    PackageName("user"),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := GetPackageName(tt.packagePath)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
 }
